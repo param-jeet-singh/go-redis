@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -135,16 +136,20 @@ func (p *ConnPool) checkMinIdleConns() {
 }
 
 func (p *ConnPool) addIdleConn() error {
+	fmt.Println("#$redis: Adding idle conn")
 	cn, err := p.dialConn(context.TODO(), true)
 	if err != nil {
+		fmt.Printf("#$redis: Failed to connect to idle conn, %s\n", err.Error())
 		return err
 	}
+	fmt.Println("#$redis: Added idle conn")
 
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
 
 	// It is not allowed to add new connections to the closed connection pool.
 	if p.closed() {
+		fmt.Println("#$redis: failed to add idle conn, pool is closed")
 		_ = cn.Close()
 		return ErrClosed
 	}

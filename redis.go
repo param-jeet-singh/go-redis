@@ -229,12 +229,14 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 	if c.opt.Limiter != nil {
 		err := c.opt.Limiter.Allow()
 		if err != nil {
+			fmt.Printf("#$redis: getConn: %v\n", err)
 			return nil, err
 		}
 	}
 
 	cn, err := c._getConn(ctx)
 	if err != nil {
+		fmt.Printf("#$redis: getConn2: %v\n", err)
 		if c.opt.Limiter != nil {
 			c.opt.Limiter.ReportResult(err)
 		}
@@ -247,16 +249,20 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	cn, err := c.connPool.Get(ctx)
 	if err != nil {
+		fmt.Printf("#$redis: baseClient._getConn: %v\n", err)
 		return nil, err
 	}
 
 	if cn.Inited {
+		fmt.Printf("#$redis: baseClient._getConn, cn is inited: %v\n", err)
 		return cn, nil
 	}
 
 	if err := c.initConn(ctx, cn); err != nil {
+		fmt.Printf("#$redis: baseClient._getConn, initConn failed: %v\n", err)
 		c.connPool.Remove(ctx, cn, err)
 		if err := errors.Unwrap(err); err != nil {
+			fmt.Printf("#$redis: baseClient._getConn, initConn failed, unwrap error: %v\n", err)
 			return nil, err
 		}
 		return nil, err
@@ -339,8 +345,10 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 func (c *baseClient) withConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) error {
+	fmt.Printf("#$redis: baseClient.withConn")
 	cn, err := c.getConn(ctx)
 	if err != nil {
+		fmt.Printf("#$redis: failed to get conn: %v\n", err)
 		return err
 	}
 
@@ -350,6 +358,7 @@ func (c *baseClient) withConn(
 	}()
 
 	fnErr = fn(ctx, cn)
+	fmt.Printf("#$redis: fnErr: %v\n", fnErr)
 
 	return fnErr
 }
@@ -374,6 +383,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
+	fmt.Printf("#$redis: baseClient._process: %v, attempt: %v\n", cmd, attempt)
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 			return false, err
@@ -594,6 +604,7 @@ type Client struct {
 	hooksMixin
 }
 
+// starts here
 // NewClient returns a client to the Redis Server specified by Options.
 func NewClient(opt *Options) *Client {
 	opt.init()
@@ -632,13 +643,16 @@ func (c *Client) Conn() *Conn {
 
 // Do create a Cmd from the args and processes the cmd.
 func (c *Client) Do(ctx context.Context, args ...interface{}) *Cmd {
+	fmt.Printf("#$redis: running command: %v\n", args)
 	cmd := NewCmd(ctx, args...)
-	_ = c.Process(ctx, cmd)
+	err := c.Process(ctx, cmd)
+	fmt.Printf("#$redis: failed to process command: %v, %v\n", cmd, err)
 	return cmd
 }
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
+	fmt.Printf("#$redis: failed to process command: %v\n", err)
 	cmd.SetErr(err)
 	return err
 }
