@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/param-jeet-singh/go-redis/v9/internal/pool"
+	"github.com/param-jeet-singh/go-redis/v9/internal/proto"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"

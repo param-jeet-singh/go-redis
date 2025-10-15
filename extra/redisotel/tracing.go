@@ -12,12 +12,12 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/redis/go-redis/extra/rediscmd/v9"
-	"github.com/redis/go-redis/v9"
+	"github.com/param-jeet-singh/go-redis/extra/rediscmd/v9"
+	"github.com/param-jeet-singh/go-redis/v9"
 )
 
 const (
-	instrumName = "github.com/redis/go-redis/extra/redisotel"
+	instrumName = "github.com/param-jeet-singh/go-redis/extra/redisotel"
 )
 
 func InstrumentTracing(rdb redis.UniversalClient, opts ...TracingOption) error {
@@ -109,7 +109,7 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 			return hook(ctx, cmd)
 		}
 
-		fn, file, line := funcFileLine("github.com/redis/go-redis")
+		fn, file, line := funcFileLine("github.com/param-jeet-singh/go-redis")
 
 		attrs := make([]attribute.KeyValue, 0, 8)
 		attrs = append(attrs,
@@ -145,7 +145,7 @@ func (th *tracingHook) ProcessPipelineHook(
 			return hook(ctx, cmds)
 		}
 
-		fn, file, line := funcFileLine("github.com/redis/go-redis")
+		fn, file, line := funcFileLine("github.com/param-jeet-singh/go-redis")
 
 		attrs := make([]attribute.KeyValue, 0, 8)
 		attrs = append(attrs,

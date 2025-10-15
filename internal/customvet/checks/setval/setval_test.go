@@ -3,7 +3,7 @@ package setval_test
 import (
 	"testing"
 
-	"github.com/redis/go-redis/internal/customvet/checks/setval"
+	"github.com/param-jeet-singh/go-redis/internal/customvet/checks/setval"
 	"golang.org/x/tools/go/analysis/analysistest"
 )
 

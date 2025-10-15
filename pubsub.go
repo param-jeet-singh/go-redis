@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
-	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/param-jeet-singh/go-redis/v9/internal"
+	"github.com/param-jeet-singh/go-redis/v9/internal/pool"
+	"github.com/param-jeet-singh/go-redis/v9/internal/proto"
 )
 
 // PubSub implements Pub/Sub commands as described in
