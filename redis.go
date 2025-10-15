@@ -254,7 +254,7 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	}
 
 	if cn.Inited {
-		fmt.Printf("#$redis: baseClient._getConn, cn is inited: %v\n", err)
+		fmt.Println("#$redis: baseClient._getConn, cn is inited")
 		return cn, nil
 	}
 
@@ -345,7 +345,6 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 func (c *baseClient) withConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) error {
-	fmt.Printf("#$redis: baseClient.withConn")
 	cn, err := c.getConn(ctx)
 	if err != nil {
 		fmt.Printf("#$redis: failed to get conn: %v\n", err)
@@ -358,7 +357,9 @@ func (c *baseClient) withConn(
 	}()
 
 	fnErr = fn(ctx, cn)
-	fmt.Printf("#$redis: fnErr: %v\n", fnErr)
+	if fnErr != nil {
+		fmt.Printf("#$redis: fnErr: %v\n", fnErr)
+	}
 
 	return fnErr
 }
@@ -383,7 +384,6 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 }
 
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
-	fmt.Printf("#$redis: baseClient._process: %v, attempt: %v\n", cmd, attempt)
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 			return false, err
@@ -643,16 +643,19 @@ func (c *Client) Conn() *Conn {
 
 // Do create a Cmd from the args and processes the cmd.
 func (c *Client) Do(ctx context.Context, args ...interface{}) *Cmd {
-	fmt.Printf("#$redis: running command: %v\n", args)
 	cmd := NewCmd(ctx, args...)
 	err := c.Process(ctx, cmd)
-	fmt.Printf("#$redis: failed to process command: %v, %v\n", cmd, err)
+	if err != nil {
+		fmt.Printf("#$redis: failed to process command: %v, %v\n", cmd, err)
+	}
 	return cmd
 }
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 	err := c.processHook(ctx, cmd)
-	fmt.Printf("#$redis: failed to process command: %v\n", err)
+	if err != nil {
+		fmt.Printf("#$redis: failed to process command: %v\n", err)
+	}
 	cmd.SetErr(err)
 	return err
 }

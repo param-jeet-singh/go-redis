@@ -136,7 +136,6 @@ func (p *ConnPool) checkMinIdleConns() {
 }
 
 func (p *ConnPool) addIdleConn() error {
-	fmt.Println("#$redis: Adding idle conn")
 	cn, err := p.dialConn(context.TODO(), true)
 	if err != nil {
 		fmt.Printf("#$redis: Failed to connect to idle conn, %s\n", err.Error())
@@ -252,6 +251,18 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 	}
 
 	if err := p.waitTurn(ctx); err != nil {
+		if err == ErrPoolTimeout {
+			p.connsMu.Lock()
+			totalConns := len(p.conns)
+			idleConns := len(p.idleConns)
+			p.connsMu.Unlock()
+
+			queueLen := len(p.queue)
+			poolSize := cap(p.queue)
+
+			fmt.Printf("#$redis: connection pool timeout - pool_size=%d, total_conns=%d, idle_conns=%d, queue_len=%d, timeout_count=%d\n",
+				poolSize, totalConns, idleConns, queueLen, atomic.LoadUint32(&p.stats.Timeouts))
+		}
 		return nil, err
 	}
 
