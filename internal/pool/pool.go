@@ -136,25 +136,31 @@ func (p *ConnPool) checkMinIdleConns() {
 }
 
 func (p *ConnPool) addIdleConn() error {
+	p.connsMu.Lock()
+	preTotalConns := len(p.conns)
+	preIdleConns := len(p.idleConns)
+	p.connsMu.Unlock()
+
 	cn, err := p.dialConn(context.TODO(), true)
 	if err != nil {
-		fmt.Printf("#$redis: Failed to connect to idle conn, %s\n", err.Error())
+		fmt.Printf("#$redis: Failed to add idle conn - error=%v, pre_state=[total=%d,idle=%d]\n", err, preTotalConns, preIdleConns)
 		return err
 	}
-	fmt.Println("#$redis: Added idle conn")
 
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
 
 	// It is not allowed to add new connections to the closed connection pool.
 	if p.closed() {
-		fmt.Println("#$redis: failed to add idle conn, pool is closed")
+		fmt.Printf("#$redis: rejecting idle conn - pool closed, pre_state=[total=%d,idle=%d]\n", preTotalConns, preIdleConns)
 		_ = cn.Close()
 		return ErrClosed
 	}
 
 	p.conns = append(p.conns, cn)
 	p.idleConns = append(p.idleConns, cn)
+	fmt.Printf("#$redis: idle conn added - total_conns=%d->%d, idle_conns=%d->%d, addr=%v\n",
+		preTotalConns, len(p.conns), preIdleConns, len(p.idleConns), cn.netConn.RemoteAddr())
 	return nil
 }
 
@@ -163,6 +169,11 @@ func (p *ConnPool) NewConn(ctx context.Context) (*Conn, error) {
 }
 
 func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
+	p.connsMu.Lock()
+	preTotalConns := len(p.conns)
+	prePoolSize := p.poolSize
+	p.connsMu.Unlock()
+
 	cn, err := p.dialConn(ctx, pooled)
 	if err != nil {
 		return nil, err
@@ -173,6 +184,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	// It is not allowed to add new connections to the closed connection pool.
 	if p.closed() {
+		fmt.Printf("#$redis: rejecting new connection - pool closed\n")
 		_ = cn.Close()
 		return nil, ErrClosed
 	}
@@ -182,27 +194,38 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		// If pool is full remove the cn on next Put.
 		if p.poolSize >= p.cfg.PoolSize {
 			cn.pooled = false
+			fmt.Printf("#$redis: new connection marked non-pooled - pool_size=%d/%d, total_conns=%d->%d\n", p.poolSize, p.cfg.PoolSize, preTotalConns, len(p.conns))
 		} else {
 			p.poolSize++
+			fmt.Printf("#$redis: new pooled connection added - pool_size=%d->%d, total_conns=%d->%d\n", prePoolSize, p.poolSize, preTotalConns, len(p.conns))
 		}
+	} else {
+		fmt.Printf("#$redis: new non-pooled connection added - total_conns=%d->%d\n", preTotalConns, len(p.conns))
 	}
 
 	return cn, nil
 }
 
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
+	start := time.Now()
 	if p.closed() {
 		return nil, ErrClosed
 	}
 
-	if atomic.LoadUint32(&p.dialErrorsNum) >= uint32(p.cfg.PoolSize) {
-		return nil, p.getLastDialError()
+	dialErrors := atomic.LoadUint32(&p.dialErrorsNum)
+	if dialErrors >= uint32(p.cfg.PoolSize) {
+		lastErr := p.getLastDialError()
+		fmt.Printf("#$redis: dial blocked due to max errors - dial_errors=%d, pool_size=%d, last_error=%v\n", dialErrors, p.cfg.PoolSize, lastErr)
+		return nil, lastErr
 	}
 
 	netConn, err := p.cfg.Dialer(ctx)
+	dialDuration := time.Since(start)
 	if err != nil {
 		p.setLastDialError(err)
-		if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.cfg.PoolSize) {
+		newErrorCount := atomic.AddUint32(&p.dialErrorsNum, 1)
+		fmt.Printf("#$redis: dial failed - duration=%v, error=%v, error_count=%d/%d\n", dialDuration, err, newErrorCount, p.cfg.PoolSize)
+		if newErrorCount == uint32(p.cfg.PoolSize) {
 			go p.tryDial()
 		}
 		return nil, err
@@ -210,6 +233,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	cn := NewConn(netConn)
 	cn.pooled = pooled
+	fmt.Printf("#$redis: dial successful - duration=%v, pooled=%v, addr=%v\n", dialDuration, pooled, netConn.RemoteAddr())
 	return cn, nil
 }
 
@@ -246,12 +270,20 @@ func (p *ConnPool) getLastDialError() error {
 
 // Get returns existed connection from the pool or creates a new one.
 func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
+	start := time.Now()
 	if p.closed() {
 		return nil, ErrClosed
 	}
 
+	p.connsMu.Lock()
+	preTotalConns := len(p.conns)
+	preIdleConns := len(p.idleConns)
+	p.connsMu.Unlock()
+	preQueueLen := len(p.queue)
+
 	if err := p.waitTurn(ctx); err != nil {
-		if err == ErrPoolTimeout {
+		waitDuration := time.Since(start)
+		if errors.Is(err, ErrPoolTimeout) {
 			p.connsMu.Lock()
 			totalConns := len(p.conns)
 			idleConns := len(p.idleConns)
@@ -260,11 +292,15 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 			queueLen := len(p.queue)
 			poolSize := cap(p.queue)
 
-			fmt.Printf("#$redis: connection pool timeout - pool_size=%d, total_conns=%d, idle_conns=%d, queue_len=%d, timeout_count=%d\n",
-				poolSize, totalConns, idleConns, queueLen, atomic.LoadUint32(&p.stats.Timeouts))
+			fmt.Printf("#$redis: connection pool timeout - pool_size=%d, total_conns=%d, idle_conns=%d, queue_len=%d, timeout_count=%d, wait_duration=%v, pre_state=[total=%d,idle=%d,queue=%d]\n",
+				poolSize, totalConns, idleConns, queueLen, atomic.LoadUint32(&p.stats.Timeouts), waitDuration, preTotalConns, preIdleConns, preQueueLen)
+		} else {
+			fmt.Printf("#$redis: connection wait failed - error=%v, wait_duration=%v\n", err, waitDuration)
 		}
 		return nil, err
 	}
+
+	waitDuration := time.Since(start)
 
 	for {
 		p.connsMu.Lock()
@@ -280,22 +316,32 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 		}
 
 		if !p.isHealthyConn(cn) {
+			fmt.Printf("#$redis: removed unhealthy connection - age=%v, idle_time=%v\n", time.Since(cn.createdAt), time.Since(time.Unix(0, atomic.LoadInt64(&cn.usedAt))))
 			_ = p.CloseConn(cn)
 			continue
 		}
 
 		atomic.AddUint32(&p.stats.Hits, 1)
+		totalDuration := time.Since(start)
+		bytesRead := cn.BytesRead()
+		bytesWritten := cn.BytesWritten()
+		fmt.Printf("#$redis: connection acquired from idle - wait_duration=%v, total_duration=%v, conn_age=%v, bytes_read=%d, bytes_written=%d\n", waitDuration, totalDuration, time.Since(cn.createdAt), bytesRead, bytesWritten)
 		return cn, nil
 	}
 
 	atomic.AddUint32(&p.stats.Misses, 1)
+	createStart := time.Now()
 
 	newcn, err := p.newConn(ctx, true)
 	if err != nil {
 		p.freeTurn()
+		fmt.Printf("#$redis: failed to create new connection - wait_duration=%v, create_duration=%v, error=%v\n", waitDuration, time.Since(createStart), err)
 		return nil, err
 	}
 
+	totalDuration := time.Since(start)
+	createDuration := time.Since(createStart)
+	fmt.Printf("#$redis: new connection created - wait_duration=%v, create_duration=%v, total_duration=%v, bytes_read=%d, bytes_written=%d\n", waitDuration, createDuration, totalDuration, newcn.BytesRead(), newcn.BytesWritten())
 	return newcn, nil
 }
 
@@ -311,6 +357,17 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 		return nil
 	default:
 	}
+
+	// Need to wait, log current state
+	p.connsMu.Lock()
+	currentTotal := len(p.conns)
+	currentIdle := p.idleConnsLen
+	p.connsMu.Unlock()
+	currentQueue := len(p.queue)
+	poolSize := cap(p.queue)
+
+	fmt.Printf("#$redis: waiting for connection slot - pool_size=%d, total_conns=%d, idle_conns=%d, queue_len=%d, timeout=%v\n",
+		poolSize, currentTotal, currentIdle, currentQueue, p.cfg.PoolTimeout)
 
 	timer := timers.Get().(*time.Timer)
 	timer.Reset(p.cfg.PoolTimeout)
@@ -364,13 +421,22 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 }
 
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
-	if cn.rd.Buffered() > 0 {
+	bufferedData := cn.rd.Buffered()
+	connAge := time.Since(cn.createdAt)
+	usedAt := time.Unix(0, atomic.LoadInt64(&cn.usedAt))
+	idleTime := time.Since(usedAt)
+	bytesRead := cn.BytesRead()
+	bytesWritten := cn.BytesWritten()
+
+	if bufferedData > 0 {
+		fmt.Printf("#$redis: connection returned with unread data - buffered_bytes=%d, conn_age=%v, idle_time=%v, bytes_read=%d, bytes_written=%d\n", bufferedData, connAge, idleTime, bytesRead, bytesWritten)
 		internal.Logger.Printf(ctx, "Conn has unread data")
 		p.Remove(ctx, cn, BadConnError{})
 		return
 	}
 
 	if !cn.pooled {
+		fmt.Printf("#$redis: non-pooled connection returned - conn_age=%v, idle_time=%v, bytes_read=%d, bytes_written=%d\n", connAge, idleTime, bytesRead, bytesWritten)
 		p.Remove(ctx, cn, nil)
 		return
 	}
@@ -378,13 +444,17 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	var shouldCloseConn bool
 
 	p.connsMu.Lock()
+	preTotalConns := len(p.conns)
+	preIdleConns := p.idleConnsLen
 
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen < p.cfg.MaxIdleConns {
 		p.idleConns = append(p.idleConns, cn)
 		p.idleConnsLen++
+		fmt.Printf("#$redis: connection returned to idle pool - conn_age=%v, idle_time=%v, idle_conns=%d->%d, total_conns=%d, bytes_read=%d, bytes_written=%d\n", connAge, idleTime, preIdleConns, p.idleConnsLen, preTotalConns, bytesRead, bytesWritten)
 	} else {
 		p.removeConn(cn)
 		shouldCloseConn = true
+		fmt.Printf("#$redis: connection closed due to max idle limit - conn_age=%v, idle_time=%v, max_idle=%d, total_conns=%d, bytes_read=%d, bytes_written=%d\n", connAge, idleTime, p.cfg.MaxIdleConns, preTotalConns, bytesRead, bytesWritten)
 	}
 
 	p.connsMu.Unlock()
@@ -397,6 +467,10 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 }
 
 func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
+	connAge := time.Since(cn.createdAt)
+	usedAt := time.Unix(0, atomic.LoadInt64(&cn.usedAt))
+	idleTime := time.Since(usedAt)
+	fmt.Printf("#$redis: removing connection - conn_age=%v, idle_time=%v, reason=%v, addr=%v\n", connAge, idleTime, reason, cn.netConn.RemoteAddr())
 	p.removeConnWithLock(cn)
 	p.freeTurn()
 	_ = p.closeConn(cn)
